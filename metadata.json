@@ -1,0 +1,6 @@
+{
+  "name": "Hydra Studio Bergama",
+  "description": "Studio tout-en-un de création musicale, photo et vidéo sans limite de durée avec génération et édition IA.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

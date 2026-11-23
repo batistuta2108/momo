@@ -1,0 +1,11 @@
+<resources>
+    <string name="app_name">Hydra Studio Bergama</string>
+    <string name="nav_home">Accueil</string>
+    <string name="nav_music">Musique</string>
+    <string name="nav_photo">Photo</string>
+    <string name="nav_video">Vidéo</string>
+    <string name="badge_unlimited">Édition Studio Complète • Sans Limite</string>
+    <string name="hub_subtitle">Créez musique, photos et vidéos pro sans limite de temps ni filigrane.</string>
+    <string name="recent_projects_title">Projets &amp; Exportations</string>
+    <string name="empty_projects">Aucun projet enregistré pour le moment. Lancez un studio ci-dessus pour commencer.</string>
+</resources>
