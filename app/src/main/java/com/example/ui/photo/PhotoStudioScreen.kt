@@ -222,6 +222,35 @@ fun PhotoStudioScreen(
             }
 
             item {
+                Surface(
+                    shape = MaterialTheme.shapes.medium,
+                    color = StudioSurfaceElevated,
+                    border = BorderStroke(1.dp, StudioBorder),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "Créer une toile / pochette rapide",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = StudioTextSecondary
+                        )
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(StudioCanvasStyle.entries) { style ->
+                                FilterChip(
+                                    selected = false,
+                                    onClick = { viewModel.createBlankStudioCanvas(style) },
+                                    label = { Text(style.label) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            item {
                 AiPhotoStudioCard(
                     prompt = aiPrompt,
                     onPromptChange = { aiPrompt = it },

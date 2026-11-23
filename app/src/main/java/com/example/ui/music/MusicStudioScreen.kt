@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
@@ -40,6 +41,7 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -134,7 +136,9 @@ fun MusicStudioScreen(
                     onSelectPreset = viewModel::applyPreset,
                     onSelectWaveform = viewModel::setWaveform,
                     onSelectScale = viewModel::setScale,
-                    onSwingChange = viewModel::setSwing
+                    onSwingChange = viewModel::setSwing,
+                    onVolumeChange = viewModel::setMasterVolume,
+                    onRandomBeat = viewModel::generateProceduralBeat
                 )
             }
 
@@ -308,7 +312,9 @@ private fun PresetAndSynthConfigRow(
     onSelectPreset: (com.example.engine.BeatPreset) -> Unit,
     onSelectWaveform: (SynthWaveform) -> Unit,
     onSelectScale: (MusicalScale) -> Unit,
-    onSwingChange: (Float) -> Unit
+    onSwingChange: (Float) -> Unit,
+    onVolumeChange: (Float) -> Unit,
+    onRandomBeat: () -> Unit
 ) {
     Surface(
         shape = MaterialTheme.shapes.medium,
@@ -320,11 +326,35 @@ private fun PresetAndSynthConfigRow(
             modifier = Modifier.padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Text(
-                text = "Styles & Synthétiseur",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "Styles & Synthétiseur",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                OutlinedButton(
+                    onClick = onRandomBeat,
+                    border = BorderStroke(1.dp, StudioCyan.copy(alpha = 0.7f)),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("music_random_beat_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Shuffle,
+                        contentDescription = null,
+                        tint = StudioCyan,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Beat Aléatoire", color = StudioCyan)
+                }
+            }
 
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(BeatPresets.all) { preset ->
@@ -386,6 +416,29 @@ private fun PresetAndSynthConfigRow(
                         activeTrackColor = StudioCyan
                     ),
                     modifier = Modifier.weight(1f)
+                )
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "Volume ${(state.masterVolume * 100).toInt()}%",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = StudioTextSecondary
+                )
+                Slider(
+                    value = state.masterVolume,
+                    onValueChange = onVolumeChange,
+                    valueRange = 0.1f..1.0f,
+                    colors = SliderDefaults.colors(
+                        thumbColor = StudioAmber,
+                        activeTrackColor = StudioAmber
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("music_volume_slider")
                 )
             }
         }

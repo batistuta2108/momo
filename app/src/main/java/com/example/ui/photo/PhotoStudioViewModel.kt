@@ -2,9 +2,16 @@ package com.example.ui.photo
 
 import android.app.Application
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.LinearGradient
+import android.graphics.Paint
+import android.graphics.Shader
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.R
 import com.example.data.ai.AiImageRatio
 import com.example.data.ai.CreativeAiRepository
 import com.example.data.local.StudioDatabase
@@ -24,6 +31,13 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+enum class StudioCanvasStyle(val label: String, val colors: IntArray) {
+    CYBER_NEON("Cyber Néon", intArrayOf(Color.rgb(8, 14, 34), Color.rgb(0, 180, 216), Color.rgb(123, 44, 191))),
+    SUNSET_GOLD("Coucher Doré", intArrayOf(Color.rgb(34, 12, 38), Color.rgb(214, 69, 80), Color.rgb(255, 183, 3))),
+    EMERALD_DARK("Émeraude", intArrayOf(Color.rgb(6, 24, 24), Color.rgb(16, 185, 129), Color.rgb(6, 95, 70))),
+    OBSIDIAN_MINIMAL("Noir Studio", intArrayOf(Color.rgb(12, 14, 20), Color.rgb(34, 40, 62), Color.rgb(12, 14, 20)))
+}
 
 data class PhotoStudioUiState(
     val title: String = "Création Photo Pro",
@@ -48,6 +62,56 @@ class PhotoStudioViewModel(application: Application) : AndroidViewModel(applicat
     val uiState: StateFlow<PhotoStudioUiState> = _uiState.asStateFlow()
 
     private var renderJob: Job? = null
+
+    init {
+        loadStarterCanvas()
+    }
+
+    private fun loadStarterCanvas() {
+        viewModelScope.launch {
+            val bmp = withContext(Dispatchers.IO) {
+                BitmapFactory.decodeResource(
+                    getApplication<Application>().resources,
+                    R.drawable.img_studio_hero_1795396503160
+                )
+            }
+            if (bmp != null) {
+                _uiState.update {
+                    it.copy(originalBitmap = bmp, previewBitmap = bmp)
+                }
+            }
+        }
+    }
+
+    fun createBlankStudioCanvas(style: StudioCanvasStyle) {
+        viewModelScope.launch {
+            val bmp = withContext(Dispatchers.Default) {
+                val w = 1080
+                val h = 1080
+                val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                val canvas = Canvas(out)
+                val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    shader = LinearGradient(
+                        0f, 0f, w.toFloat(), h.toFloat(),
+                        style.colors,
+                        null,
+                        Shader.TileMode.CLAMP
+                    )
+                }
+                canvas.drawRect(0f, 0f, w.toFloat(), h.toFloat(), paint)
+                out
+            }
+            _uiState.update {
+                it.copy(
+                    originalBitmap = bmp,
+                    edits = PhotoEditState(overlayText = "HYDRA STUDIO"),
+                    showOriginal = false,
+                    statusMessage = "Toile « ${style.label} » prête à éditer."
+                )
+            }
+            scheduleRender()
+        }
+    }
 
     fun loadFromUri(uri: Uri) {
         viewModelScope.launch {
@@ -245,9 +309,5 @@ class PhotoStudioViewModel(application: Application) : AndroidViewModel(applicat
                 }
             }
         }
-    }
-
-    fun clearMessages() {
-        _uiState.update { it.copy(statusMessage = null, errorMessage = null, aiError = null) }
     }
 }

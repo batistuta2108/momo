@@ -2,13 +2,21 @@ package com.example.ui.video
 
 import android.app.Application
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.LinearGradient
+import android.graphics.Paint
+import android.graphics.Shader
 import android.media.MediaPlayer
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.R
 import com.example.data.ai.AiVideoStoryboard
 import com.example.data.ai.CreativeAiRepository
 import com.example.data.local.StudioDatabase
+import com.example.data.local.StudioProjectEntity
 import com.example.data.local.StudioProjectRepository
 import com.example.data.local.StudioProjectType
 import com.example.engine.PhotoFilterPreset
@@ -17,14 +25,19 @@ import com.example.engine.VideoClipItem
 import com.example.engine.VideoComposerEngine
 import com.example.engine.VideoTransition
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.UUID
 
 sealed interface AiStoryboardUiState {
@@ -59,11 +72,91 @@ class VideoStudioViewModel(application: Application) : AndroidViewModel(applicat
         StudioDatabase.getInstance(application).projectDao()
     )
 
+    val savedAudioExports: StateFlow<List<StudioProjectEntity>> = projectRepository.observeProjects()
+        .map { list -> list.filter { it.type == StudioProjectType.MUSIC.name && !it.exportedUri.isNullOrBlank() } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), emptyList())
+
     private val _uiState = MutableStateFlow(VideoStudioUiState())
     val uiState: StateFlow<VideoStudioUiState> = _uiState.asStateFlow()
 
     private var playJob: Job? = null
     private var mediaPlayer: MediaPlayer? = null
+
+    init {
+        loadStarterClips()
+    }
+
+    fun loadStarterClips() {
+        viewModelScope.launch {
+            val (clips, bitmaps) = withContext(Dispatchers.Default) {
+                val ctx = getApplication<Application>()
+                val hero = BitmapFactory.decodeResource(ctx.resources, R.drawable.img_studio_hero_1795396503160)
+                    ?: createGradientFrame(Color.rgb(8, 22, 48), Color.rgb(0, 229, 255))
+                val slide2 = createGradientFrame(Color.rgb(34, 12, 58), Color.rgb(255, 179, 0))
+                val slide3 = createGradientFrame(Color.rgb(10, 32, 34), Color.rgb(16, 224, 160))
+
+                val c1 = VideoClipItem(
+                    id = "starter_1",
+                    uri = Uri.EMPTY,
+                    isVideo = false,
+                    durationSec = 3,
+                    transition = VideoTransition.ZOOM,
+                    filter = PhotoFilterPreset.ORIGINAL,
+                    caption = "Hydra Studio Bergama"
+                )
+                val c2 = VideoClipItem(
+                    id = "starter_2",
+                    uri = Uri.EMPTY,
+                    isVideo = false,
+                    durationSec = 3,
+                    transition = VideoTransition.FADE,
+                    filter = PhotoFilterPreset.CINEMA,
+                    caption = "Montage Vidéo Sans Limite"
+                )
+                val c3 = VideoClipItem(
+                    id = "starter_3",
+                    uri = Uri.EMPTY,
+                    isVideo = false,
+                    durationSec = 3,
+                    transition = VideoTransition.SLIDE,
+                    filter = PhotoFilterPreset.GOLDEN,
+                    caption = "Export HD Sans Filigrane"
+                )
+                listOf(c1, c2, c3) to mapOf(c1.id to hero, c2.id to slide2, c3.id to slide3)
+            }
+            _uiState.update {
+                it.copy(
+                    clips = clips,
+                    clipBitmaps = bitmaps,
+                    selectedClipIndex = 0,
+                    positionMs = 0L
+                )
+            }
+        }
+    }
+
+    private fun createGradientFrame(c1: Int, c2: Int): Bitmap {
+        val bmp = Bitmap.createBitmap(720, 1280, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = LinearGradient(0f, 0f, 720f, 1280f, c1, c2, Shader.TileMode.CLAMP)
+        }
+        canvas.drawRect(0f, 0f, 720f, 1280f, paint)
+        return bmp
+    }
+
+    fun clearAllClips() {
+        stopPlayback()
+        _uiState.update {
+            it.copy(
+                clips = emptyList(),
+                clipBitmaps = emptyMap(),
+                selectedClipIndex = 0,
+                positionMs = 0L,
+                statusMessage = "Timeline vidée."
+            )
+        }
+    }
 
     fun updateTitle(title: String) {
         _uiState.update { it.copy(title = title) }
@@ -97,10 +190,12 @@ class VideoStudioViewModel(application: Application) : AndroidViewModel(applicat
             }
             if (newClips.isNotEmpty()) {
                 _uiState.update { state ->
+                    val existingFiltered = state.clips.filterNot { it.id.startsWith("starter_") }
+                    val existingBmps = state.clipBitmaps.filterKeys { !it.startsWith("starter_") }
                     state.copy(
-                        clips = state.clips + newClips,
-                        clipBitmaps = state.clipBitmaps + newBitmaps,
-                        selectedClipIndex = if (state.clips.isEmpty()) 0 else state.selectedClipIndex,
+                        clips = existingFiltered + newClips,
+                        clipBitmaps = existingBmps + newBitmaps,
+                        selectedClipIndex = if (existingFiltered.isEmpty()) 0 else state.selectedClipIndex,
                         statusMessage = "${newClips.size} média(s) ajouté(s) à la timeline."
                     )
                 }
@@ -344,10 +439,6 @@ class VideoStudioViewModel(application: Application) : AndroidViewModel(applicat
                 }
             }
         }
-    }
-
-    fun clearMessages() {
-        _uiState.update { it.copy(statusMessage = null, errorMessage = null) }
     }
 
     override fun onCleared() {

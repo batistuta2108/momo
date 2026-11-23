@@ -1,5 +1,6 @@
 package com.example.ui.video
 
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -38,8 +39,10 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.MovieCreation
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -95,6 +98,7 @@ fun VideoStudioScreen(
     viewModel: VideoStudioViewModel = viewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val savedBeats by viewModel.savedAudioExports.collectAsStateWithLifecycle()
     var aiPrompt by rememberSaveable { mutableStateOf("") }
 
     val multiMediaPicker = rememberLauncherForActivityResult(
@@ -188,7 +192,8 @@ fun VideoStudioScreen(
                         multiMediaPicker.launch(
                             PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
                         )
-                    }
+                    },
+                    onLoadStarter = viewModel::loadStarterClips
                 )
             }
 
@@ -267,11 +272,56 @@ fun VideoStudioScreen(
                 }
             }
 
+            if (savedBeats.isNotEmpty()) {
+                item {
+                    Surface(
+                        shape = MaterialTheme.shapes.medium,
+                        color = StudioSurfaceElevated,
+                        border = BorderStroke(1.dp, StudioBorder),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "Vos beats créés dans Musique Studio",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = StudioTextSecondary
+                            )
+                            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                items(savedBeats, key = { it.id }) { beat ->
+                                    val uriStr = beat.exportedUri ?: return@items
+                                    val isSelected = state.audioUri?.toString() == uriStr
+                                    FilterChip(
+                                        selected = isSelected,
+                                        onClick = { viewModel.attachAudio(Uri.parse(uriStr), beat.title) },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = Icons.Filled.MusicNote,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        },
+                                        label = { Text(beat.title) },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = StudioAmber.copy(alpha = 0.24f),
+                                            selectedLabelColor = StudioAmber
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             if (state.clips.isNotEmpty()) {
                 item {
                     TimelineClipsStrip(
                         state = state,
-                        onSelectClip = viewModel::selectClip
+                        onSelectClip = viewModel::selectClip,
+                        onClearAll = viewModel::clearAllClips
                     )
                 }
 
@@ -378,7 +428,8 @@ private fun VideoPreviewMonitor(
     state: VideoStudioUiState,
     onTogglePlay: () -> Unit,
     onSeek: (Long) -> Unit,
-    onAddMedia: () -> Unit
+    onAddMedia: () -> Unit,
+    onLoadStarter: () -> Unit
 ) {
     val ratioFloat = state.aspectRatio.width.toFloat() / state.aspectRatio.height.toFloat()
     val totalSec = (state.totalDurationMs / 1000L).toInt()
@@ -403,23 +454,45 @@ private fun VideoPreviewMonitor(
             ) {
                 if (state.clips.isEmpty()) {
                     Column(
-                        modifier = Modifier
-                            .clickable(onClick = onAddMedia)
-                            .padding(24.dp),
+                        modifier = Modifier.padding(20.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Filled.MovieCreation,
-                            contentDescription = null,
-                            tint = StudioAmber,
-                            modifier = Modifier.size(42.dp)
-                        )
-                        Text(
-                            text = "Ajoutez des photos ou vidéos sans limite de durée",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = StudioTextSecondary
-                        )
+                        Column(
+                            modifier = Modifier
+                                .clickable(onClick = onAddMedia)
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.MovieCreation,
+                                contentDescription = null,
+                                tint = StudioAmber,
+                                modifier = Modifier.size(42.dp)
+                            )
+                            Text(
+                                text = "Ajoutez des photos ou vidéos sans limite de durée",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = StudioTextSecondary
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = onLoadStarter,
+                            border = BorderStroke(1.dp, StudioCyan),
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("video_load_starter_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Refresh,
+                                contentDescription = null,
+                                tint = StudioCyan,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Charger démo 3 scènes", color = StudioCyan)
+                        }
                     }
                 } else {
                     Canvas(
@@ -485,7 +558,8 @@ private fun VideoPreviewMonitor(
 @Composable
 private fun TimelineClipsStrip(
     state: VideoStudioUiState,
-    onSelectClip: (Int) -> Unit
+    onSelectClip: (Int) -> Unit,
+    onClearAll: () -> Unit
 ) {
     Surface(
         shape = MaterialTheme.shapes.medium,
@@ -497,11 +571,34 @@ private fun TimelineClipsStrip(
             modifier = Modifier.padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text(
-                text = "Timeline (${state.clips.size} plans • durée illimitée)",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "Timeline (${state.clips.size} plans • durée illimitée)",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                OutlinedButton(
+                    onClick = onClearAll,
+                    border = BorderStroke(1.dp, StudioCoral.copy(alpha = 0.6f)),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("video_clear_clips_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.DeleteOutline,
+                        contentDescription = null,
+                        tint = StudioCoral,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Vider", color = StudioCoral)
+                }
+            }
 
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 itemsIndexed(state.clips, key = { _, c -> c.id }) { idx, clip ->

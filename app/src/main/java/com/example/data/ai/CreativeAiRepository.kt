@@ -3,6 +3,7 @@ package com.example.data.ai
 import android.graphics.Bitmap
 import android.util.Log
 import com.google.firebase.Firebase
+import com.google.firebase.FirebaseApp
 import com.google.firebase.ai.ai
 import com.google.firebase.ai.type.AspectRatio
 import com.google.firebase.ai.type.ImageConfig
@@ -54,6 +55,16 @@ enum class AiImageRatio(val label: String) {
 }
 
 class CreativeAiRepository {
+
+    private fun ensureFirebaseReady() {
+        val ready = runCatching { FirebaseApp.getInstance() }.isSuccess
+        if (!ready) {
+            throw IllegalStateException(
+                "IA Cloud indisponible dans cette build (google-services.json absent lors du build GitHub). " +
+                    "Tous les studios de création locale (Musique WAV, Photo HD, Vidéo MP4) fonctionnent sans limite."
+            )
+        }
+    }
 
     private val songSchema = Schema.obj(
         properties = mapOf(
@@ -135,6 +146,7 @@ class CreativeAiRepository {
 
     suspend fun generateSongPlan(prompt: String): AiSongPlan {
         try {
+            ensureFirebaseReady()
             val fullPrompt = """
                 Tu es un producteur musical pro. Crée une composition complète en français (ou dans la langue demandée) pour :
                 "$prompt"
@@ -181,6 +193,7 @@ class CreativeAiRepository {
 
     suspend fun generateVideoStoryboard(prompt: String): AiVideoStoryboard {
         try {
+            ensureFirebaseReady()
             val fullPrompt = """
                 Tu es un réalisateur et monteur vidéo pro. Crée un storyboard structuré en français pour le projet vidéo :
                 "$prompt"
@@ -231,6 +244,7 @@ class CreativeAiRepository {
 
     suspend fun generateImage(prompt: String, ratio: AiImageRatio): Bitmap {
         try {
+            ensureFirebaseReady()
             val model = when (ratio) {
                 AiImageRatio.SQUARE -> squareImageModel
                 AiImageRatio.LANDSCAPE -> landscapeImageModel
@@ -256,6 +270,7 @@ class CreativeAiRepository {
 
     suspend fun editImage(inputBitmap: Bitmap, instruction: String): Bitmap {
         try {
+            ensureFirebaseReady()
             val response = withTimeout(60_000L) {
                 squareImageModel.generateContent(
                     content {

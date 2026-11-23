@@ -139,6 +139,44 @@ class MusicStudioViewModel(application: Application) : AndroidViewModel(applicat
         syncEngine()
     }
 
+    fun setMasterVolume(volume: Float) {
+        _uiState.update { it.copy(masterVolume = volume.coerceIn(0.1f, 1.0f)) }
+        syncEngine()
+    }
+
+    fun generateProceduralBeat() {
+        val rng = java.util.Random()
+        val kicks = List(16) { i -> i == 0 || i == 8 || (i % 2 == 0 && rng.nextFloat() < 0.3f) || (i == 6 && rng.nextBoolean()) }
+        val snares = List(16) { i -> i == 4 || i == 12 || (i == 15 && rng.nextFloat() < 0.35f) }
+        val hihats = List(16) { i -> i % 2 == 0 || rng.nextFloat() < 0.55f }
+        val claps = List(16) { i -> i == 12 || (i == 4 && rng.nextBoolean()) }
+        val bass = List(16) { i -> kicks[i] || (i % 4 == 2 && rng.nextFloat() < 0.5f) }
+        val lead = List(16) { i -> i % 3 == 0 || rng.nextFloat() < 0.45f }
+
+        val newBpm = 88 + rng.nextInt(56)
+        val wf = SynthWaveform.entries[rng.nextInt(SynthWaveform.entries.size)]
+        val sc = MusicalScale.entries[rng.nextInt(MusicalScale.entries.size)]
+
+        _uiState.update {
+            it.copy(
+                selectedPreset = "Générateur Pro",
+                bpm = newBpm,
+                waveform = wf,
+                scale = sc,
+                grid = mapOf(
+                    TrackType.KICK to kicks,
+                    TrackType.SNARE to snares,
+                    TrackType.HIHAT to hihats,
+                    TrackType.CLAP to claps,
+                    TrackType.BASS to bass,
+                    TrackType.LEAD to lead
+                ),
+                statusMessage = "Nouveau beat généré ($newBpm BPM • ${sc.label}) !"
+            )
+        }
+        syncEngine()
+    }
+
     fun setExportBars(bars: Int) {
         _uiState.update { it.copy(exportBars = bars.coerceIn(1, 256)) }
     }
