@@ -130,6 +130,26 @@ class AudioSynthEngine {
 
     companion object {
         const val SAMPLE_RATE = 44100
+
+        fun resample24kTo44k(pcm24kLe: ByteArray): ShortArray {
+            if (pcm24kLe.size < 2) return ShortArray(0)
+            val srcCount = pcm24kLe.size / 2
+            val src = ShortArray(srcCount)
+            ByteBuffer.wrap(pcm24kLe).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(src)
+
+            val ratio = SAMPLE_RATE.toDouble() / 24000.0
+            val dstCount = (srcCount * ratio).toInt().coerceAtLeast(1)
+            val dst = ShortArray(dstCount)
+            for (i in 0 until dstCount) {
+                val srcPos = i / ratio
+                val idx = srcPos.toInt().coerceIn(0, srcCount - 1)
+                val nextIdx = (idx + 1).coerceIn(0, srcCount - 1)
+                val frac = srcPos - idx
+                val sample = src[idx] * (1.0 - frac) + src[nextIdx] * frac
+                dst[i] = sample.toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+            }
+            return dst
+        }
     }
 
     private var playbackJob: Job? = null
@@ -186,23 +206,7 @@ class AudioSynthEngine {
                 AudioFormat.ENCODING_PCM_16BIT
             ).coerceAtLeast(4096)
 
-            val track = AudioTrack.Builder()
-                .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                        .build()
-                )
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .setSampleRate(SAMPLE_RATE)
-                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                        .build()
-                )
-                .setBufferSizeInBytes(minBuf * 2)
-                .setTransferMode(AudioTrack.MODE_STREAM)
-                .build()
+            val track = createStreamTrack(minBuf * 2)
 
             try {
                 track.play()
@@ -231,6 +235,101 @@ class AudioSynthEngine {
                     )
                     track.write(pcm, 0, pcm.size)
                     step = (step + 1) % 16
+                }
+            } finally {
+                runCatching {
+                    track.stop()
+                    track.release()
+                }
+            }
+        }
+    }
+
+    fun startFullSong(
+        scope: CoroutineScope,
+        song: SunoSongTrack,
+        masterVolume: Float,
+        startFraction: Float = 0f,
+        onProgress: (posMs: Long, totalMs: Long, sectionIndex: Int, stepInBar: Int) -> Unit,
+        onFinished: () -> Unit
+    ) {
+        stopLoop()
+        playbackJob = scope.launch(Dispatchers.Default) {
+            val sections = song.sections.ifEmpty {
+                listOf(SongSection("Arrangement", 8, 0.9f, song.fullLyrics))
+            }
+            val totalBars = sections.sumOf { it.bars.coerceAtLeast(1) }.coerceAtLeast(1)
+            val totalSteps = totalBars * 16
+            val bpm = song.bpm.coerceIn(60, 200)
+            val baseStepSamples = (SAMPLE_RATE * 60.0 / bpm / 4.0).toInt()
+            val totalSamplesEstimate = totalSteps.toLong() * baseStepSamples
+            val totalMs = (totalSamplesEstimate * 1000L) / SAMPLE_RATE
+
+            val timelineSteps = buildSectionTimeline(sections)
+            val startStep = (startFraction.coerceIn(0f, 0.98f) * timelineSteps.size).toInt()
+                .coerceIn(0, (timelineSteps.size - 1).coerceAtLeast(0))
+
+            // Find sample offset where vocal track starts (first Couplet or Refrain, or bar 2)
+            val vocalStartStep = timelineSteps.indexOfFirst { (secIdx, _) ->
+                val secName = sections[secIdx].name.lowercase()
+                "couplet" in secName || "refrain" in secName || "chorus" in secName || "thème" in secName
+            }.let { if (it >= 0) it else 32.coerceAtMost(timelineSteps.size / 4) }
+
+            val vocalPcm = if (!song.isInstrumental) song.vocalPcm44k else null
+            var globalSampleCursor = startStep.toLong() * baseStepSamples
+            val vocalStartSample = vocalStartStep.toLong() * baseStepSamples
+
+            val minBuf = AudioTrack.getMinBufferSize(
+                SAMPLE_RATE,
+                AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_16BIT
+            ).coerceAtLeast(4096)
+
+            val track = createStreamTrack(minBuf * 2)
+            try {
+                track.play()
+                for (stepIdx in startStep until timelineSteps.size) {
+                    if (!isActive) break
+                    val (secIndex, barInTrack) = timelineSteps[stepIdx]
+                    val section = sections[secIndex]
+                    val stepInBar = stepIdx % 16
+
+                    val stepSamples = if (stepInBar % 2 == 1) {
+                        (baseStepSamples * (1f + song.swing * 0.45f)).toInt()
+                    } else {
+                        (baseStepSamples * (1f - song.swing * 0.45f)).toInt()
+                    }.coerceAtLeast(1000)
+
+                    val posMs = (globalSampleCursor * 1000L) / SAMPLE_RATE
+                    withContext(Dispatchers.Main) {
+                        onProgress(posMs.coerceAtMost(totalMs), totalMs, secIndex, stepInBar)
+                    }
+
+                    val chordName = if (song.chords.isNotEmpty()) {
+                        song.chords[barInTrack % song.chords.size]
+                    } else {
+                        "Am"
+                    }
+
+                    val pcm = synthesizeArrangedStep(
+                        stepInBar = stepInBar,
+                        sampleCount = stepSamples,
+                        grid = song.grid,
+                        waveform = song.waveform,
+                        scale = song.scale,
+                        chordName = chordName,
+                        section = section,
+                        masterVolume = masterVolume,
+                        vocalPcm = vocalPcm,
+                        vocalSampleOffset = globalSampleCursor - vocalStartSample
+                    )
+                    track.write(pcm, 0, pcm.size)
+                    globalSampleCursor += stepSamples
+                }
+                if (isActive) {
+                    withContext(Dispatchers.Main) {
+                        onFinished()
+                    }
                 }
             } finally {
                 runCatching {
@@ -330,19 +429,79 @@ class AudioSynthEngine {
                 scale = scale,
                 masterVolume = volume
             )
-            val byteBuf = ByteBuffer.allocate(shorts.size * 2).order(ByteOrder.LITTLE_ENDIAN)
-            for (sample in shorts) {
-                byteBuf.putShort(sample)
-            }
-            pcmStream.write(byteBuf.array())
+            writeShortsToStream(shorts, pcmStream)
         }
 
-        val pcmData = pcmStream.toByteArray()
+        saveWavBytesToMediaStore(context, title, pcmStream.toByteArray())
+    }
+
+    suspend fun exportFullSongWavToMediaStore(
+        context: Context,
+        song: SunoSongTrack,
+        masterVolume: Float
+    ): Uri = withContext(Dispatchers.IO) {
+        val sections = song.sections.ifEmpty {
+            listOf(SongSection("Arrangement", 8, 0.9f, song.fullLyrics))
+        }
+        val timelineSteps = buildSectionTimeline(sections)
+        val bpm = song.bpm.coerceIn(60, 200)
+        val baseStepSamples = (SAMPLE_RATE * 60.0 / bpm / 4.0).toInt()
+
+        val vocalStartStep = timelineSteps.indexOfFirst { (secIdx, _) ->
+            val secName = sections[secIdx].name.lowercase()
+            "couplet" in secName || "refrain" in secName || "chorus" in secName || "thème" in secName
+        }.let { if (it >= 0) it else 32.coerceAtMost(timelineSteps.size / 4) }
+
+        val vocalPcm = if (!song.isInstrumental) song.vocalPcm44k else null
+        var globalSampleCursor = 0L
+        val vocalStartSample = vocalStartStep.toLong() * baseStepSamples
+
+        val pcmStream = ByteArrayOutputStream()
+        for (stepIdx in timelineSteps.indices) {
+            val (secIndex, barInTrack) = timelineSteps[stepIdx]
+            val section = sections[secIndex]
+            val stepInBar = stepIdx % 16
+            val stepSamples = if (stepInBar % 2 == 1) {
+                (baseStepSamples * (1f + song.swing * 0.45f)).toInt()
+            } else {
+                (baseStepSamples * (1f - song.swing * 0.45f)).toInt()
+            }.coerceAtLeast(1000)
+
+            val chordName = if (song.chords.isNotEmpty()) {
+                song.chords[barInTrack % song.chords.size]
+            } else {
+                "Am"
+            }
+
+            val shorts = synthesizeArrangedStep(
+                stepInBar = stepInBar,
+                sampleCount = stepSamples,
+                grid = song.grid,
+                waveform = song.waveform,
+                scale = song.scale,
+                chordName = chordName,
+                section = section,
+                masterVolume = masterVolume,
+                vocalPcm = vocalPcm,
+                vocalSampleOffset = globalSampleCursor - vocalStartSample
+            )
+            writeShortsToStream(shorts, pcmStream)
+            globalSampleCursor += stepSamples
+        }
+
+        saveWavBytesToMediaStore(context, song.title, pcmStream.toByteArray())
+    }
+
+    private fun saveWavBytesToMediaStore(
+        context: Context,
+        title: String,
+        pcmData: ByteArray
+    ): Uri {
         val wavHeader = buildWavHeader(pcmData.size, SAMPLE_RATE, 1, 16)
         val safeTitle = title.replace(Regex("[^a-zA-Z0-9_-]"), "_").ifBlank { "HydraBeat" }
         val fileName = "${safeTitle}_${System.currentTimeMillis()}.wav"
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
                 put(MediaStore.Audio.Media.DISPLAY_NAME, fileName)
                 put(MediaStore.Audio.Media.MIME_TYPE, "audio/wav")
@@ -372,6 +531,190 @@ class AudioSynthEngine {
         }
     }
 
+    private fun writeShortsToStream(shorts: ShortArray, stream: ByteArrayOutputStream) {
+        val byteBuf = ByteBuffer.allocate(shorts.size * 2).order(ByteOrder.LITTLE_ENDIAN)
+        for (sample in shorts) {
+            byteBuf.putShort(sample)
+        }
+        stream.write(byteBuf.array())
+    }
+
+    private fun createStreamTrack(bufSize: Int): AudioTrack {
+        return AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(SAMPLE_RATE)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .build()
+            )
+            .setBufferSizeInBytes(bufSize)
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .build()
+    }
+
+    private fun buildSectionTimeline(sections: List<SongSection>): List<Pair<Int, Int>> {
+        val steps = mutableListOf<Pair<Int, Int>>()
+        var barCounter = 0
+        sections.forEachIndexed { secIdx, sec ->
+            val bars = sec.bars.coerceAtLeast(1)
+            for (b in 0 until bars) {
+                for (s in 0 until 16) {
+                    steps.add(secIdx to barCounter)
+                }
+                barCounter++
+            }
+        }
+        return steps
+    }
+
+    private fun synthesizeArrangedStep(
+        stepInBar: Int,
+        sampleCount: Int,
+        grid: Map<TrackType, List<Boolean>>,
+        waveform: SynthWaveform,
+        scale: MusicalScale,
+        chordName: String,
+        section: SongSection,
+        masterVolume: Float,
+        vocalPcm: ShortArray?,
+        vocalSampleOffset: Long
+    ): ShortArray {
+        val output = ShortArray(sampleCount)
+        val e = section.energy.coerceIn(0.3f, 1.0f)
+
+        val hasKick = section.drumsEnabled && (grid[TrackType.KICK]?.getOrNull(stepInBar) == true)
+        val hasSnare = section.drumsEnabled && e >= 0.6f && (grid[TrackType.SNARE]?.getOrNull(stepInBar) == true)
+        val hasHihat = (section.drumsEnabled || e >= 0.44f) && (grid[TrackType.HIHAT]?.getOrNull(stepInBar) == true)
+        val hasClap = section.drumsEnabled && e >= 0.72f && (grid[TrackType.CLAP]?.getOrNull(stepInBar) == true)
+        val hasBass = section.bassEnabled && (grid[TrackType.BASS]?.getOrNull(stepInBar) == true)
+        val hasLead = section.leadEnabled && (grid[TrackType.LEAD]?.getOrNull(stepInBar) == true)
+        val hasChordTrigger = section.chordsEnabled && (stepInBar == 0 || (e > 0.8f && stepInBar == 8))
+        val hasArp = section.arpEnabled && (stepInBar % 2 == 0)
+
+        val chordNotes = parseChordMidiNotes(chordName)
+        val bassFreq = midiToFreq(chordNotes.first() - 24)
+        val chordFreqs = chordNotes.map { midiToFreq(it) }
+        val arpFreq = midiToFreq(chordNotes[(stepInBar / 2) % chordNotes.size] + 12)
+        val leadDegrees = intArrayOf(0, 2, 4, 5, 7, 4, 3, 2, 0, 4, 6, 4, 2, 5, 3, 1)
+        val leadMidi = 60 + scale.offsets[leadDegrees[stepInBar % leadDegrees.size] % scale.offsets.size]
+        val leadFreq = midiToFreq(leadMidi)
+
+        var seed = (stepInBar + 1) * 7919 + 131
+        for (i in 0 until sampleCount) {
+            val t = i.toDouble() / SAMPLE_RATE
+            var mix = 0.0
+
+            seed = seed * 1664525 + 1013904223
+            val noise = ((seed shr 16) and 0xFFFF) / 32768.0 - 1.0
+
+            if (hasKick) {
+                val freqSweep = 42.0 + 118.0 * exp(-t * 36.0)
+                val kickEnv = exp(-t * 10.5)
+                mix += sin(2.0 * PI * freqSweep * t) * kickEnv * (0.85 * e + 0.15)
+            }
+
+            if (hasSnare) {
+                val body = sin(2.0 * PI * 185.0 * t) * exp(-t * 28.0) * 0.42
+                val snap = noise * exp(-t * 20.0) * 0.50
+                mix += (body + snap) * e
+            }
+
+            if (hasHihat) {
+                val metallic = (noise - 0.5 * sin(2.0 * PI * 7200.0 * t)) * exp(-t * 68.0) * 0.28
+                mix += metallic * e
+            }
+
+            if (hasClap) {
+                val burst = when {
+                    t < 0.012 -> 1.0
+                    t < 0.024 -> 0.8
+                    t < 0.036 -> 0.65
+                    else -> exp(-(t - 0.036) * 26.0)
+                }
+                mix += noise * burst * 0.45 * e
+            }
+
+            if (hasBass) {
+                val bassEnv = (1.0 - exp(-t * 140.0)) * exp(-t * 4.8)
+                val bassOsc = 0.72 * sin(2.0 * PI * bassFreq * t) + 0.28 * sin(4.0 * PI * bassFreq * t)
+                mix += bassOsc * bassEnv * 0.62 * e
+            }
+
+            if (section.chordsEnabled) {
+                val padEnv = if (hasChordTrigger) {
+                    (1.0 - exp(-t * 25.0)) * exp(-t * 1.4)
+                } else {
+                    0.35 * exp(-t * 1.8)
+                }
+                var chordSum = 0.0
+                for (cf in chordFreqs) {
+                    chordSum += sin(2.0 * PI * cf * t) * 0.6 +
+                        sampleOscillator(SynthWaveform.TRIANGLE, cf * 1.003, t) * 0.4
+                }
+                mix += (chordSum / chordFreqs.size) * padEnv * 0.34
+            }
+
+            if (hasArp) {
+                val arpEnv = (1.0 - exp(-t * 180.0)) * exp(-t * 11.0)
+                mix += sampleOscillator(SynthWaveform.TRIANGLE, arpFreq, t) * arpEnv * 0.24 * e
+            }
+
+            if (hasLead) {
+                val leadEnv = (1.0 - exp(-t * 120.0)) * exp(-t * 8.0)
+                mix += sampleOscillator(waveform, leadFreq, t) * leadEnv * 0.36 * e
+            }
+
+            if (vocalPcm != null && vocalPcm.isNotEmpty()) {
+                val vIdx = vocalSampleOffset + i
+                if (vIdx in vocalPcm.indices) {
+                    val mainVocal = vocalPcm[vIdx.toInt()] / 32768.0
+                    val echoIdx = (vIdx - (SAMPLE_RATE * 0.14).toLong()).toInt()
+                    val echoVocal = if (echoIdx in vocalPcm.indices) (vocalPcm[echoIdx] / 32768.0) * 0.22 else 0.0
+                    mix = mix * 0.76 + (mainVocal + echoVocal) * 0.92
+                }
+            }
+
+            val limited = tanh(mix * masterVolume) * Short.MAX_VALUE
+            output[i] = limited.toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+        }
+        return output
+    }
+
+    private fun parseChordMidiNotes(chord: String): List<Int> {
+        val c = chord.trim()
+        if (c.isEmpty()) return listOf(57, 60, 64)
+        val rootChar = c[0].uppercaseChar()
+        var rootOffset = when (rootChar) {
+            'C' -> 0
+            'D' -> 2
+            'E' -> 4
+            'F' -> 5
+            'G' -> 7
+            'A' -> 9
+            'B' -> 11
+            else -> 9
+        }
+        if (c.length > 1) {
+            when (c[1]) {
+                '#' -> rootOffset += 1
+                'b' -> rootOffset -= 1
+            }
+        }
+        val rootMidi = 48 + ((rootOffset % 12) + 12) % 12
+        val isMinor = c.lowercase().contains("m") && !c.lowercase().contains("maj")
+        val third = if (isMinor) 3 else 4
+        return listOf(rootMidi, rootMidi + third, rootMidi + 7)
+    }
+
+    private fun midiToFreq(midi: Int): Double = 440.0 * 2.0.pow((midi - 69) / 12.0)
+
     private fun synthesizeStep(
         stepIndex: Int,
         sampleCount: Int,
@@ -391,18 +734,17 @@ class AudioSynthEngine {
 
         val bassDegrees = intArrayOf(0, 0, 3, 4, 0, 2, 5, 4)
         val bassNote = 36 + scale.offsets[bassDegrees[stepIndex / 2 % bassDegrees.size] % scale.offsets.size]
-        val bassFreq = 440.0 * 2.0.pow((bassNote - 69) / 12.0)
+        val bassFreq = midiToFreq(bassNote)
 
         val leadDegrees = intArrayOf(0, 2, 4, 5, 7, 4, 3, 2, 0, 4, 6, 4, 2, 5, 3, 1)
         val leadNote = 60 + scale.offsets[leadDegrees[stepIndex % leadDegrees.size] % scale.offsets.size]
-        val leadFreq = 440.0 * 2.0.pow((leadNote - 69) / 12.0)
+        val leadFreq = midiToFreq(leadNote)
 
         var seed = (stepIndex + 1) * 7919 + 131
         for (i in 0 until sampleCount) {
             val t = i.toDouble() / SAMPLE_RATE
             var mix = 0.0
 
-            // Fast deterministic LCG noise
             seed = seed * 1664525 + 1013904223
             val noise = ((seed shr 16) and 0xFFFF) / 32768.0 - 1.0
 

@@ -274,6 +274,42 @@ class PhotoStudioViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
+    fun applyAiColorGrading(prompt: String) {
+        if (prompt.isBlank() || _uiState.value.isAiBusy) return
+        if (_uiState.value.originalBitmap == null) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isAiBusy = true, aiError = null, statusMessage = null) }
+            try {
+                val advice = aiRepository.generatePhotoGradingAdvice(prompt)
+                _uiState.update { state ->
+                    state.copy(
+                        isAiBusy = false,
+                        edits = state.edits.copy(
+                            filter = advice.filter,
+                            brightness = advice.brightness,
+                            contrast = advice.contrast,
+                            saturation = advice.saturation,
+                            warmth = advice.warmth,
+                            vignette = advice.vignette,
+                            overlayText = advice.overlayText.ifBlank { state.edits.overlayText }
+                        ),
+                        statusMessage = "Étalonnage & titre IA « ${advice.filter.label} » appliqués !"
+                    )
+                }
+                scheduleRender()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isAiBusy = false,
+                        aiError = e.localizedMessage ?: "Échec de l'étalonnage IA."
+                    )
+                }
+            }
+        }
+    }
+
     fun exportPhoto() {
         val bmp = _uiState.value.previewBitmap ?: _uiState.value.originalBitmap ?: return
         if (_uiState.value.isExporting) return

@@ -114,9 +114,9 @@ fun StudioHubScreen(
                 Spacer(modifier = Modifier.height(10.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     StudioLaunchCard(
-                        title = "Studio Musique & Beats",
-                        subtitle = "Séquenceur 16 pas, synthé temps réel, compositeur IA & export WAV sans limite",
-                        badge = "Audio PCM 44.1kHz",
+                        title = "Suno Studio & Musique IA",
+                        subtitle = "Mode Simple/Personnalisé, paroles & voix IA, arrangements multi-sections & WAV complet",
+                        badge = "Suno Studio • 44.1kHz",
                         accentColor = StudioCyan,
                         icon = Icons.Filled.GraphicEq,
                         testTag = "launch_music_studio",

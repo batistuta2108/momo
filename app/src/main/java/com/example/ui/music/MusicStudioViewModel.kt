@@ -1,6 +1,7 @@
 package com.example.ui.music
 
 import android.app.Application
+import android.speech.tts.TextToSpeech
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.ai.AiSongPlan
@@ -12,6 +13,11 @@ import com.example.engine.AudioSynthEngine
 import com.example.engine.BeatPreset
 import com.example.engine.BeatPresets
 import com.example.engine.MusicalScale
+import com.example.engine.SunoCreateMode
+import com.example.engine.SunoSongLength
+import com.example.engine.SunoSongTrack
+import com.example.engine.SunoStarterLibrary
+import com.example.engine.SunoVoicePersona
 import com.example.engine.SynthWaveform
 import com.example.engine.TrackType
 import kotlinx.coroutines.CancellationException
@@ -20,6 +26,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.util.Locale
+
+enum class MusicStudioWorkspaceTab(val label: String) {
+    SUNO_FULL("Suno Studio"),
+    DAW_PRO("Séquenceur DAW")
+}
 
 sealed interface AiSongUiState {
     data object Idle : AiSongUiState
@@ -29,6 +41,27 @@ sealed interface AiSongUiState {
 }
 
 data class MusicStudioUiState(
+    val workspaceTab: MusicStudioWorkspaceTab = MusicStudioWorkspaceTab.SUNO_FULL,
+    // Suno Full State
+    val sunoCreateMode: SunoCreateMode = SunoCreateMode.SIMPLE,
+    val simplePrompt: String = "",
+    val customTitle: String = "",
+    val customLyrics: String = "",
+    val customStyleTags: String = "Afro-Trap, 808 Profonde, Synthé Spatial",
+    val isInstrumental: Boolean = false,
+    val voicePersona: SunoVoicePersona = SunoVoicePersona.MALE_RAP,
+    val songLength: SunoSongLength = SunoSongLength.FULL,
+    val sunoLibrary: List<SunoSongTrack> = SunoStarterLibrary.starterTracks(),
+    val activeSongId: String = SunoStarterLibrary.starterTracks().first().id,
+    val isPlayingSong: Boolean = false,
+    val songPosMs: Long = 0L,
+    val songTotalMs: Long = SunoStarterLibrary.starterTracks().first().durationSec * 1000L,
+    val activeSectionIndex: Int = 0,
+    val liveTtsEnabled: Boolean = true,
+    val isSunoAiBusy: Boolean = false,
+    val isLyricsAiBusy: Boolean = false,
+    val sunoAiError: String? = null,
+    // Pro DAW Sequencer State
     val title: String = "Session Trap 808",
     val selectedPreset: String = BeatPresets.all.first().name,
     val bpm: Int = BeatPresets.all.first().bpm,
@@ -45,7 +78,10 @@ data class MusicStudioUiState(
     val statusMessage: String? = null,
     val errorMessage: String? = null,
     val aiSongState: AiSongUiState = AiSongUiState.Idle
-)
+) {
+    val activeSong: SunoSongTrack?
+        get() = sunoLibrary.firstOrNull { it.id == activeSongId } ?: sunoLibrary.firstOrNull()
+}
 
 class MusicStudioViewModel(application: Application) : AndroidViewModel(application) {
     private val engine = AudioSynthEngine()
@@ -57,9 +93,385 @@ class MusicStudioViewModel(application: Application) : AndroidViewModel(applicat
     private val _uiState = MutableStateFlow(MusicStudioUiState())
     val uiState: StateFlow<MusicStudioUiState> = _uiState.asStateFlow()
 
+    private var tts: TextToSpeech? = null
+    private var ttsReady: Boolean = false
+    private var lastSpokenSectionIndex: Int = -1
+
     init {
         syncEngine()
+        initTextToSpeech()
     }
+
+    private fun initTextToSpeech() {
+        runCatching {
+            tts = TextToSpeech(getApplication()) { status ->
+                if (status == TextToSpeech.SUCCESS) {
+                    val res = tts?.setLanguage(Locale.FRENCH)
+                    ttsReady = res != TextToSpeech.LANG_MISSING_DATA && res != TextToSpeech.LANG_NOT_SUPPORTED
+                    if (!ttsReady) {
+                        tts?.language = Locale.getDefault()
+                        ttsReady = true
+                    }
+                }
+            }
+        }
+    }
+
+    private fun stopAllPlayback() {
+        engine.stopLoop()
+        runCatching { tts?.stop() }
+        lastSpokenSectionIndex = -1
+        _uiState.update {
+            it.copy(
+                isPlaying = false,
+                isPlayingSong = false,
+                currentStep = -1
+            )
+        }
+    }
+
+    fun selectWorkspaceTab(tab: MusicStudioWorkspaceTab) {
+        stopAllPlayback()
+        _uiState.update { it.copy(workspaceTab = tab) }
+    }
+
+    // --- SUNO FULL CONTROLS ---
+
+    fun setSunoCreateMode(mode: SunoCreateMode) {
+        _uiState.update { it.copy(sunoCreateMode = mode) }
+    }
+
+    fun updateSimplePrompt(value: String) {
+        _uiState.update { it.copy(simplePrompt = value, sunoAiError = null) }
+    }
+
+    fun updateCustomTitle(value: String) {
+        _uiState.update { it.copy(customTitle = value) }
+    }
+
+    fun updateCustomLyrics(value: String) {
+        _uiState.update { it.copy(customLyrics = value) }
+    }
+
+    fun appendLyricsSectionTag(tag: String) {
+        _uiState.update { state ->
+            val prefix = if (state.customLyrics.isBlank()) "" else "\n\n"
+            state.copy(customLyrics = "${state.customLyrics}$prefix[$tag]\n")
+        }
+    }
+
+    fun updateCustomStyleTags(value: String) {
+        _uiState.update { it.copy(customStyleTags = value) }
+    }
+
+    fun toggleStyleChip(tag: String) {
+        _uiState.update { state ->
+            val current = state.customStyleTags
+            val updated = if (current.contains(tag, ignoreCase = true)) {
+                current
+            } else if (current.isBlank()) {
+                tag
+            } else {
+                "$current, $tag"
+            }
+            state.copy(customStyleTags = updated)
+        }
+    }
+
+    fun setInstrumental(instrumental: Boolean) {
+        _uiState.update { it.copy(isInstrumental = instrumental) }
+    }
+
+    fun setVoicePersona(persona: SunoVoicePersona) {
+        _uiState.update { it.copy(voicePersona = persona) }
+    }
+
+    fun setSongLength(length: SunoSongLength) {
+        _uiState.update { it.copy(songLength = length) }
+    }
+
+    fun toggleLiveTts() {
+        val next = !_uiState.value.liveTtsEnabled
+        if (!next) {
+            runCatching { tts?.stop() }
+        }
+        _uiState.update { it.copy(liveTtsEnabled = next) }
+    }
+
+    fun selectSunoSong(songId: String) {
+        stopAllPlayback()
+        val song = _uiState.value.sunoLibrary.firstOrNull { it.id == songId } ?: return
+        _uiState.update {
+            it.copy(
+                activeSongId = song.id,
+                songPosMs = 0L,
+                songTotalMs = song.durationSec * 1000L,
+                activeSectionIndex = 0
+            )
+        }
+    }
+
+    fun remixSongIntoCustom(song: SunoSongTrack) {
+        _uiState.update {
+            it.copy(
+                sunoCreateMode = SunoCreateMode.CUSTOM,
+                customTitle = "${song.title} (Remix)",
+                customStyleTags = song.styleTags,
+                customLyrics = song.fullLyrics,
+                isInstrumental = song.isInstrumental,
+                voicePersona = song.voicePersona,
+                statusMessage = "Paroles et style chargés dans le mode Personnalisé."
+            )
+        }
+    }
+
+    fun loadSongIntoDaw(song: SunoSongTrack) {
+        stopAllPlayback()
+        _uiState.update {
+            it.copy(
+                workspaceTab = MusicStudioWorkspaceTab.DAW_PRO,
+                title = song.title,
+                selectedPreset = "Suno • ${song.title}",
+                bpm = song.bpm,
+                swing = song.swing,
+                waveform = song.waveform,
+                scale = song.scale,
+                grid = song.grid,
+                mutedTracks = emptySet(),
+                statusMessage = "Morceau « ${song.title} » ouvert dans le Séquenceur DAW."
+            )
+        }
+        syncEngine()
+    }
+
+    fun togglePlayActiveSong() {
+        val state = _uiState.value
+        val song = state.activeSong ?: return
+        if (state.isPlayingSong) {
+            stopAllPlayback()
+            return
+        }
+        val fraction = if (state.songTotalMs > 0 && state.songPosMs < state.songTotalMs - 500L) {
+            state.songPosMs.toFloat() / state.songTotalMs.toFloat()
+        } else {
+            0f
+        }
+        startSunoSongPlayback(song, fraction)
+    }
+
+    fun seekActiveSong(posMs: Long) {
+        val state = _uiState.value
+        val song = state.activeSong ?: return
+        val total = state.songTotalMs.coerceAtLeast(1000L)
+        val clamped = posMs.coerceIn(0L, total)
+        _uiState.update { it.copy(songPosMs = clamped) }
+        if (state.isPlayingSong) {
+            startSunoSongPlayback(song, clamped.toFloat() / total.toFloat())
+        }
+    }
+
+    private fun startSunoSongPlayback(song: SunoSongTrack, startFraction: Float) {
+        stopAllPlayback()
+        _uiState.update {
+            it.copy(
+                isPlayingSong = true,
+                songTotalMs = song.durationSec * 1000L
+            )
+        }
+        engine.startFullSong(
+            scope = viewModelScope,
+            song = song,
+            masterVolume = _uiState.value.masterVolume,
+            startFraction = startFraction,
+            onProgress = { posMs, totalMs, secIdx, stepInBar ->
+                _uiState.update {
+                    it.copy(
+                        songPosMs = posMs,
+                        songTotalMs = totalMs,
+                        activeSectionIndex = secIdx,
+                        currentStep = stepInBar
+                    )
+                }
+                maybeSpeakSection(song, secIdx)
+            },
+            onFinished = {
+                stopAllPlayback()
+                _uiState.update { it.copy(songPosMs = 0L, activeSectionIndex = 0) }
+            }
+        )
+    }
+
+    private fun maybeSpeakSection(song: SunoSongTrack, sectionIndex: Int) {
+        val state = _uiState.value
+        if (!state.liveTtsEnabled || song.isInstrumental || song.vocalPcm44k != null) return
+        if (!ttsReady || sectionIndex == lastSpokenSectionIndex) return
+        lastSpokenSectionIndex = sectionIndex
+
+        val section = song.sections.getOrNull(sectionIndex) ?: return
+        val cleanText = section.lyrics.trim()
+        if (cleanText.isBlank() || cleanText.startsWith("(")) return
+
+        runCatching {
+            tts?.setPitch(song.voicePersona.pitch)
+            tts?.setSpeechRate(song.voicePersona.speechRate)
+            tts?.speak(cleanText, TextToSpeech.QUEUE_FLUSH, null, "sec_$sectionIndex")
+        }
+    }
+
+    fun generateLyricsWithAi() {
+        val s = _uiState.value
+        val topic = s.customTitle.ifBlank { s.simplePrompt }.ifBlank { s.customStyleTags }
+        if (topic.isBlank() || s.isLyricsAiBusy) return
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLyricsAiBusy = true, sunoAiError = null, statusMessage = null) }
+            try {
+                val (genTitle, genLyrics) = aiRepository.generateSunoLyricsOnly(topic, s.customStyleTags)
+                _uiState.update {
+                    it.copy(
+                        isLyricsAiBusy = false,
+                        customTitle = it.customTitle.ifBlank { genTitle },
+                        customLyrics = genLyrics,
+                        statusMessage = "Paroles structurées générées par Gemini IA !"
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isLyricsAiBusy = false,
+                        sunoAiError = e.localizedMessage ?: "Échec de génération des paroles IA."
+                    )
+                }
+            }
+        }
+    }
+
+    fun createSunoTrackWithAi() {
+        val s = _uiState.value
+        if (s.isSunoAiBusy) return
+        val prompt = if (s.sunoCreateMode == SunoCreateMode.SIMPLE) {
+            s.simplePrompt.ifBlank { "Afro-trap moderne mélodique et énergique" }
+        } else {
+            s.customStyleTags.ifBlank { s.customTitle.ifBlank { "Studio moderne" } }
+        }
+
+        viewModelScope.launch {
+            stopAllPlayback()
+            _uiState.update { it.copy(isSunoAiBusy = true, sunoAiError = null, statusMessage = null) }
+            try {
+                val (song, hasAiVocals) = aiRepository.generateSunoFullSong(
+                    prompt = prompt,
+                    customLyrics = if (s.sunoCreateMode == SunoCreateMode.CUSTOM) s.customLyrics else null,
+                    styleTags = if (s.sunoCreateMode == SunoCreateMode.CUSTOM) s.customStyleTags else null,
+                    titleHint = if (s.sunoCreateMode == SunoCreateMode.CUSTOM) s.customTitle else null,
+                    isInstrumental = s.isInstrumental,
+                    voicePersona = s.voicePersona,
+                    length = s.songLength
+                )
+                _uiState.update { state ->
+                    state.copy(
+                        isSunoAiBusy = false,
+                        sunoLibrary = listOf(song) + state.sunoLibrary,
+                        activeSongId = song.id,
+                        songPosMs = 0L,
+                        songTotalMs = song.durationSec * 1000L,
+                        activeSectionIndex = 0,
+                        statusMessage = if (hasAiVocals) {
+                            "Morceau Suno IA créé avec voix IA intégrée (${song.title}) !"
+                        } else {
+                            "Morceau Suno IA créé (${song.title} • ${song.bpm} BPM) !"
+                        }
+                    )
+                }
+                startSunoSongPlayback(song, 0f)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isSunoAiBusy = false,
+                        sunoAiError = e.localizedMessage ?: "Échec de la création Suno IA."
+                    )
+                }
+            }
+        }
+    }
+
+    fun createSunoTrackOffline() {
+        val s = _uiState.value
+        stopAllPlayback()
+        val style = if (s.sunoCreateMode == SunoCreateMode.SIMPLE) {
+            s.simplePrompt.ifBlank { s.customStyleTags }
+        } else {
+            s.customStyleTags
+        }
+        val lyrics = if (s.sunoCreateMode == SunoCreateMode.CUSTOM) s.customLyrics else ""
+        val title = if (s.sunoCreateMode == SunoCreateMode.CUSTOM) s.customTitle else ""
+
+        val song = SunoStarterLibrary.buildLocalSunoTrack(
+            titleInput = title,
+            promptOrStyle = style,
+            lyricsInput = lyrics,
+            isInstrumental = s.isInstrumental,
+            voicePersona = s.voicePersona,
+            length = s.songLength
+        )
+
+        _uiState.update { state ->
+            state.copy(
+                sunoLibrary = listOf(song) + state.sunoLibrary,
+                activeSongId = song.id,
+                songPosMs = 0L,
+                songTotalMs = song.durationSec * 1000L,
+                activeSectionIndex = 0,
+                sunoAiError = null,
+                statusMessage = "Morceau « ${song.title} » produit en Studio (${song.durationSec}s) !"
+            )
+        }
+        startSunoSongPlayback(song, 0f)
+    }
+
+    fun exportActiveSongWav() {
+        val s = _uiState.value
+        val song = s.activeSong ?: return
+        if (s.isExporting) return
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(isExporting = true, statusMessage = null, errorMessage = null) }
+            try {
+                val uri = engine.exportFullSongWavToMediaStore(
+                    context = getApplication(),
+                    song = song,
+                    masterVolume = s.masterVolume
+                )
+                projectRepository.saveProject(
+                    title = song.title,
+                    type = StudioProjectType.MUSIC,
+                    summary = "${song.bpm} BPM • ${song.durationSec}s • ${song.styleTags.take(24)} • WAV",
+                    exportedUri = uri.toString()
+                )
+                _uiState.update {
+                    it.copy(
+                        isExporting = false,
+                        statusMessage = "Chanson complète « ${song.title} » exportée en WAV dans Musique/Hydra Studio Bergama !"
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isExporting = false,
+                        errorMessage = e.localizedMessage ?: "Erreur lors de l'export WAV."
+                    )
+                }
+            }
+        }
+    }
+
+    // --- PRO DAW SEQUENCER CONTROLS ---
 
     private fun syncEngine() {
         val s = _uiState.value
@@ -184,9 +596,9 @@ class MusicStudioViewModel(application: Application) : AndroidViewModel(applicat
     fun togglePlayback() {
         val currentlyPlaying = _uiState.value.isPlaying
         if (currentlyPlaying) {
-            engine.stopLoop()
-            _uiState.update { it.copy(isPlaying = false, currentStep = -1) }
+            stopAllPlayback()
         } else {
+            stopAllPlayback()
             syncEngine()
             _uiState.update { it.copy(isPlaying = true) }
             engine.startLoop(viewModelScope) { step ->
@@ -276,12 +688,9 @@ class MusicStudioViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    fun clearMessages() {
-        _uiState.update { it.copy(statusMessage = null, errorMessage = null) }
-    }
-
     override fun onCleared() {
         super.onCleared()
-        engine.stopLoop()
+        stopAllPlayback()
+        runCatching { tts?.shutdown() }
     }
 }

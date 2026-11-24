@@ -259,7 +259,8 @@ fun PhotoStudioScreen(
                     hasActiveImage = state.originalBitmap != null,
                     isBusy = state.isAiBusy,
                     onGenerate = { viewModel.generateAiPhoto(aiPrompt, aiRatio) },
-                    onMagicEdit = { viewModel.magicEditWithAi(aiPrompt) }
+                    onMagicEdit = { viewModel.magicEditWithAi(aiPrompt) },
+                    onAiGrading = { viewModel.applyAiColorGrading(aiPrompt) }
                 )
             }
 
@@ -369,7 +370,8 @@ private fun AiPhotoStudioCard(
     hasActiveImage: Boolean,
     isBusy: Boolean,
     onGenerate: () -> Unit,
-    onMagicEdit: () -> Unit
+    onMagicEdit: () -> Unit,
+    onAiGrading: () -> Unit
 ) {
     Surface(
         shape = MaterialTheme.shapes.medium,
@@ -412,7 +414,7 @@ private fun AiPhotoStudioCard(
             OutlinedTextField(
                 value = prompt,
                 onValueChange = onPromptChange,
-                label = { Text("Décrivez une image à créer ou une retouche magique") },
+                label = { Text("Décrivez une image, ambiance couleur ou retouche") },
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag("photo_ai_prompt_input"),
@@ -450,6 +452,22 @@ private fun AiPhotoStudioCard(
                     ) {
                         Text("Retoucher IA", color = StudioCyan)
                     }
+                }
+            }
+
+            if (hasActiveImage) {
+                OutlinedButton(
+                    onClick = onAiGrading,
+                    enabled = !isBusy && prompt.isNotBlank(),
+                    border = BorderStroke(1.dp, StudioAmber.copy(alpha = 0.75f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .testTag("photo_ai_grading_button")
+                ) {
+                    Icon(Icons.Filled.AutoAwesome, contentDescription = null, tint = StudioAmber, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Étalonnage & Titre Cinéma IA (Flash)", color = StudioAmber)
                 }
             }
         }

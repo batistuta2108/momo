@@ -101,14 +101,32 @@ fun MusicStudioScreen(
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             item {
-                TransportControlCard(
-                    state = state,
-                    onTitleChange = viewModel::updateTitle,
-                    onTogglePlay = viewModel::togglePlayback,
-                    onBpmChange = viewModel::setBpm,
-                    onExportBarsChange = viewModel::setExportBars,
-                    onExportWav = viewModel::exportWav
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    MusicStudioWorkspaceTab.entries.forEach { tab ->
+                        val selected = state.workspaceTab == tab
+                        FilterChip(
+                            selected = selected,
+                            onClick = { viewModel.selectWorkspaceTab(tab) },
+                            label = {
+                                Text(
+                                    text = tab.label,
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+                                )
+                            },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = StudioCyan.copy(alpha = 0.24f),
+                                selectedLabelColor = StudioCyan
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
+                                .testTag("music_tab_${tab.name}")
+                        )
+                    }
+                }
             }
 
             if (state.statusMessage != null || state.errorMessage != null) {
@@ -130,42 +148,87 @@ fun MusicStudioScreen(
                 }
             }
 
-            item {
-                PresetAndSynthConfigRow(
-                    state = state,
-                    onSelectPreset = viewModel::applyPreset,
-                    onSelectWaveform = viewModel::setWaveform,
-                    onSelectScale = viewModel::setScale,
-                    onSwingChange = viewModel::setSwing,
-                    onVolumeChange = viewModel::setMasterVolume,
-                    onRandomBeat = viewModel::generateProceduralBeat
-                )
-            }
+            if (state.workspaceTab == MusicStudioWorkspaceTab.SUNO_FULL) {
+                item {
+                    SunoCreatorCard(
+                        state = state,
+                        viewModel = viewModel
+                    )
+                }
 
-            item {
-                SequencerGridCard(
-                    grid = state.grid,
-                    mutedTracks = state.mutedTracks,
-                    currentStep = state.currentStep,
-                    onToggleStep = viewModel::toggleStep,
-                    onToggleMute = viewModel::toggleMute
-                )
-            }
+                val activeSong = state.activeSong
+                if (activeSong != null) {
+                    item {
+                        SunoNowPlayingCard(
+                            song = activeSong,
+                            state = state,
+                            onTogglePlay = viewModel::togglePlayActiveSong,
+                            onSeek = viewModel::seekActiveSong,
+                            onToggleLiveTts = viewModel::toggleLiveTts,
+                            onExportWav = viewModel::exportActiveSongWav,
+                            onOpenInDaw = { viewModel.loadSongIntoDaw(activeSong) }
+                        )
+                    }
+                }
 
-            item {
-                LiveSynthKeyboardCard(
-                    waveform = state.waveform,
-                    onTriggerNote = viewModel::triggerLiveNote
-                )
-            }
+                item {
+                    SunoLibraryCard(
+                        songs = state.sunoLibrary,
+                        activeSongId = state.activeSongId,
+                        isPlaying = state.isPlayingSong,
+                        onSelect = viewModel::selectSunoSong,
+                        onRemix = viewModel::remixSongIntoCustom
+                    )
+                }
+            } else {
+                item {
+                    TransportControlCard(
+                        state = state,
+                        onTitleChange = viewModel::updateTitle,
+                        onTogglePlay = viewModel::togglePlayback,
+                        onBpmChange = viewModel::setBpm,
+                        onExportBarsChange = viewModel::setExportBars,
+                        onExportWav = viewModel::exportWav
+                    )
+                }
 
-            item {
-                AiSongwriterCard(
-                    prompt = aiPrompt,
-                    onPromptChange = { aiPrompt = it },
-                    aiState = state.aiSongState,
-                    onGenerate = { viewModel.generateWithAi(aiPrompt) }
-                )
+                item {
+                    PresetAndSynthConfigRow(
+                        state = state,
+                        onSelectPreset = viewModel::applyPreset,
+                        onSelectWaveform = viewModel::setWaveform,
+                        onSelectScale = viewModel::setScale,
+                        onSwingChange = viewModel::setSwing,
+                        onVolumeChange = viewModel::setMasterVolume,
+                        onRandomBeat = viewModel::generateProceduralBeat
+                    )
+                }
+
+                item {
+                    SequencerGridCard(
+                        grid = state.grid,
+                        mutedTracks = state.mutedTracks,
+                        currentStep = state.currentStep,
+                        onToggleStep = viewModel::toggleStep,
+                        onToggleMute = viewModel::toggleMute
+                    )
+                }
+
+                item {
+                    LiveSynthKeyboardCard(
+                        waveform = state.waveform,
+                        onTriggerNote = viewModel::triggerLiveNote
+                    )
+                }
+
+                item {
+                    AiSongwriterCard(
+                        prompt = aiPrompt,
+                        onPromptChange = { aiPrompt = it },
+                        aiState = state.aiSongState,
+                        onGenerate = { viewModel.generateWithAi(aiPrompt) }
+                    )
+                }
             }
 
             item { Spacer(modifier = Modifier.height(16.dp)) }
